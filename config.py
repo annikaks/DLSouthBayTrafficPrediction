@@ -15,6 +15,6 @@ VAL_RATIO = 0.1         # test is 1 - TRAIN_RATIO - VAL_RATIO = 0.2
 # hyperparameters, make this a grid search eventually
 BATCH_SIZE = 64
 LR = 1e-3
-EPOCHS = 10
+EPOCHS = 20
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
