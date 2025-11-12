@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from config import TRAIN_RATIO, VAL_RATIO
+from datetime import datetime, timedelta
+
 
 
 class Normalizer:
@@ -28,6 +30,62 @@ class Normalizer:
     def inverse_transform(self, data: np.ndarray) -> np.ndarray:
         return data * self.std + self.mean
 
+
+PEMS_START_DATETIME = datetime(2022, 1, 1, 0, 0)  # assume start : Jan 1, 2022, 00:00
+PEMS_STEP_MINUTES = 5  # 5-minute intervals (from PEMS)
+
+# holiday list (add Stanford events using agents)
+HOLIDAYS_2022 = {
+    datetime(2022, 1, 1).date(),   # New Year's 
+    datetime(2022, 2, 14).date(),   # Valentines Day
+    datetime(2022, 7, 4).date(),   # July 4th
+    datetime(2022, 11, 24).date(), # Thanksgiving
+    datetime(2022, 12, 25).date(), # Christmas
+}
+
+
+def add_context_features(
+    data: np.ndarray,
+    start_dt: datetime = PEMS_START_DATETIME,
+    step_minutes: int = PEMS_STEP_MINUTES,
+    add_weather: bool = True,
+) -> np.ndarray:
+    """
+    Augment (T, N, F) traffic data with:
+      - hour_of_day(t)          in [0, 23]
+      - day_of_week(t)          in [0, 6]  (0=Monday)
+      - is_holiday(t)           in {0, 1}
+      - weather(t)              placeholder (currently zeros)
+
+    Returns:
+        data_aug: (T, N, F + extra_features)
+    """
+    T, N, F = data.shape
+
+    # Build per-timestep datetimes
+    times = [start_dt + timedelta(minutes=step_minutes * t) for t in range(T)]
+
+    hours = np.array([dt.hour for dt in times], dtype=np.float32)          # (T,)
+    dows = np.array([dt.weekday() for dt in times], dtype=np.float32)      # (T,)
+    is_holiday = np.array(
+        [1.0 if dt.date() in HOLIDAYS_2022 else 0.0 for dt in times],
+        dtype=np.float32,
+    )  # (T,)
+
+    # Broadcast to (T, N, 1)
+    hours_feat = np.tile(hours[:, None, None], (1, N, 1))       # (T, N, 1)
+    dows_feat = np.tile(dows[:, None, None], (1, N, 1))         # (T, N, 1)
+    holiday_feat = np.tile(is_holiday[:, None, None], (1, N, 1))# (T, N, 1)
+
+    features = [data, hours_feat, dows_feat, holiday_feat]
+
+    if add_weather:
+        # Placeholder: all zeros. Later you can replace with real weather per time.
+        weather_feat = np.zeros_like(hours_feat, dtype=np.float32)  # (T, N, 1)
+        features.append(weather_feat)
+
+    data_aug = np.concatenate(features, axis=2)  # (T, N, F + extra)
+    return data_aug
 
 def _load_from_npy(path: str) -> np.ndarray:
     arr = np.load(path, allow_pickle=True)
@@ -90,6 +148,7 @@ def create_sliding_windows(
         Essentially, aggregate the last hour of speed as the "X" 
         and the "y" as the speed in the next window (sets up to use 
         the last hour of speed to predict the next five minutes)
+        
         X: (S, W, N, F) input windows
         y: (S, N)       target next-step speed (feature 0)
 
