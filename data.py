@@ -244,3 +244,27 @@ def _load_from_pkl(path: str) -> np.ndarray:
         f"Expected numpy array or dict of arrays."
     )
 
+def add_spatial_avg_feature(data: np.ndarray, k: int = 5) -> np.ndarray:
+    """
+    Adds average neighbor speed as a new feature.
+    
+    data: (T, N, F) where data[..., 0] is speed
+    k: number of neighbors on each side (local window)
+    
+    Returns:
+        (T, N, F+1)
+    """
+    T, N, F = data.shape
+    speed = data[:, :, 0]  # (T, N)
+
+    avg_neighbors = np.zeros_like(speed)
+
+    for i in range(N):
+        left = max(0, i - k)
+        right = min(N, i + k + 1)
+        avg_neighbors[:, i] = speed[:, left:right].mean(axis=1)
+
+    avg_neighbors = avg_neighbors[:, :, None]  # (T, N, 1)
+
+    data_aug = np.concatenate([data, avg_neighbors], axis=2)
+    return data_aug

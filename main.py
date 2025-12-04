@@ -17,12 +17,14 @@ from data import (
     Normalizer,
     create_sliding_windows,
     TrafficDataset,
-    add_context_features
+    add_context_features,
+    add_spatial_avg_feature,
 )
 from models import (
     LinearRegressionModel,
     LogisticRegressionModel,
     MLPRegressor,
+    LSTMRegressor,
 )
 from train_utils import (
     train_regression_model,
@@ -136,6 +138,28 @@ def run_logistic(ctx):
     train_classification_model(log_model, train_loader_cls, val_loader_cls)
     return log_model
 
+def run_lstm(ctx):
+    N, F = ctx["N"], ctx["F"]
+    train_loader_reg = ctx["train_loader_reg"]
+    val_loader_reg = ctx["val_loader_reg"]
+
+    hidden_dim = getattr(config, "LSTM_HIDDEN_DIM", 128)
+    num_layers = getattr(config, "LSTM_NUM_LAYERS", 1)
+    dropout = getattr(config, "LSTM_DROPOUT", 0.0)
+
+    print("\n=== Training LSTM regression model ===")
+    lstm_model = LSTMRegressor(
+        window_size=WINDOW_SIZE,
+        num_nodes=N,
+        num_features=F,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+    )
+    train_regression_model(lstm_model, train_loader_reg, val_loader_reg)
+    return lstm_model
+
+
 
 def sample_from_range(range_tuple, base_val, is_int=False):
     """
@@ -235,40 +259,40 @@ def run_mlp_random_search(ctx):
         return mlp_model
 
 
-def evaluate_route_with_mlp(ctx, mlp_model):
+def evaluate_route_with_model(ctx, model, model_name="model"):
     scaler = ctx["scaler"]
     val_loader_reg = ctx["val_loader_reg"]
 
-    mlp_model.to(DEVICE)
-    mlp_model.eval()
+    model.to(DEVICE)
+    model.eval()
     all_true = []
     all_pred = []
     with torch.no_grad():
         for X_batch, y_batch in val_loader_reg:
             X_batch = X_batch.to(DEVICE)
             y_batch = y_batch.to(DEVICE)
-            y_hat = mlp_model(X_batch)
+            y_hat = model(X_batch)
             all_true.append(y_batch.cpu())
             all_pred.append(y_hat.cpu())
-    y_val_true_pred = torch.cat(all_true, dim=0).numpy()
-    y_val_pred_pred = torch.cat(all_pred, dim=0).numpy()
+    y_val_true = torch.cat(all_true, dim=0).numpy()
+    y_val_pred = torch.cat(all_pred, dim=0).numpy()
 
     try:
         true_tt = compute_route_travel_time_minutes(
-            y_val_true_pred,
+            y_val_true,
             scaler,
             route_name="stanford_to_sfo",
         )
         pred_tt = compute_route_travel_time_minutes(
-            y_val_pred_pred,
+            y_val_pred,
             scaler,
             route_name="stanford_to_sfo",
         )
         rmse_tt = np.sqrt(((true_tt - pred_tt) ** 2).mean())
         mae_tt = np.abs(true_tt - pred_tt).mean()
         print(
-            f"\n[Route: stanford_to_sfo] Travel time RMSE={rmse_tt:.2f} min, "
-            f"MAE={mae_tt:.2f} min (validation)"
+            f"\n[{model_name} | Route: stanford_to_sfo] "
+            f"Travel time RMSE={rmse_tt:.2f} min, MAE={mae_tt:.2f} min (validation)"
         )
     except KeyError:
         print("\nNo route 'stanford_to_sfo' defined in routes.py; skip route metrics.")
@@ -278,11 +302,22 @@ def main():
     # load raw data
     raw_data = load_raw_data(DATA_PATH)
     print("Raw data shape:", raw_data.shape)
-    data = add_context_features(raw_data)  # (T, N, F)
-    print("Feature data shape:", data.shape)
-    scaler = Normalizer()
 
-    # prepare all datasets/loaders once
+    # Always add time-based features
+    data = add_context_features(raw_data)
+
+    # ✅ Conditionally add spatial features
+    use_spatial = getattr(config, "USE_SPATIAL_FEATURES", False)
+    if use_spatial:
+        k = getattr(config, "SPATIAL_K", 5)
+        print(f"Adding spatial avg-neighbor feature (k={k})")
+        data = add_spatial_avg_feature(data, k=k)
+    else:
+        print("Running WITHOUT spatial features")
+
+    print("Final feature data shape:", data.shape)
+
+    scaler = Normalizer()
     ctx = data_setup(data, scaler)
 
     # models to run (booleans in config.py)
@@ -290,6 +325,7 @@ def main():
     run_linear_flag = getattr(config, "RUN_LINEAR", True)
     run_logistic_flag = getattr(config, "RUN_LOGISTIC", True)
     run_mlp_flag = getattr(config, "RUN_MLP", True)
+    run_lstm_flag = getattr(config, "RUN_LSTM", False)
 
     if run_greedy:
         run_naive(ctx)
@@ -303,7 +339,12 @@ def main():
     best_mlp = None
     if run_mlp_flag:
         best_mlp = run_mlp_random_search(ctx)
-        evaluate_route_with_mlp(ctx, best_mlp)
+        evaluate_route_with_model(ctx, best_mlp)
+
+    lstm_model = None
+    if run_lstm_flag:
+        lstm_model = run_lstm(ctx)
+        evaluate_route_with_model(ctx, lstm_model, model_name="LSTM")
 
 
 if __name__ == "__main__":
