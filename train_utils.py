@@ -111,7 +111,7 @@ def train_classification_model(
 ):
     model.to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.BCEWithLogitsLoss()  # applies sigmoid (thus not applied in log_regression in models.py)
 
     for epoch in range(1, epochs + 1):
         train_loss = train_epoch(model, train_loader, optimizer, criterion, task="classification")
