@@ -32,7 +32,7 @@ from train_utils import (
     evaluate,  # to get val RMSE for MLP trials
 )
 from baselines import evaluate_naive_last_value
-from routes import compute_route_travel_time_minutes
+from routes import ROUTES, compute_route_travel_time_minutes
 from config import DEVICE
 
 
@@ -267,36 +267,43 @@ def evaluate_route_with_model(ctx, model, model_name="model"):
     model.eval()
     all_true = []
     all_pred = []
+
     with torch.no_grad():
         for X_batch, y_batch in val_loader_reg:
             X_batch = X_batch.to(DEVICE)
             y_batch = y_batch.to(DEVICE)
             y_hat = model(X_batch)
+
             all_true.append(y_batch.cpu())
             all_pred.append(y_hat.cpu())
-    y_val_true = torch.cat(all_true, dim=0).numpy()
-    y_val_pred = torch.cat(all_pred, dim=0).numpy()
 
-    try:
+    y_val_true = torch.cat(all_true, dim=0).numpy()   # (S, N)
+    y_val_pred = torch.cat(all_pred, dim=0).numpy()   # (S, N)
+
+    print(f"\n[{model_name}] Route-level ETA evaluation:")
+
+    for route_name in ROUTES:
+
         true_tt = compute_route_travel_time_minutes(
             y_val_true,
             scaler,
-            route_name="stanford_to_sfo",
+            route_name=route_name,
         )
+
         pred_tt = compute_route_travel_time_minutes(
             y_val_pred,
             scaler,
-            route_name="stanford_to_sfo",
+            route_name=route_name,
         )
+
         rmse_tt = np.sqrt(((true_tt - pred_tt) ** 2).mean())
         mae_tt = np.abs(true_tt - pred_tt).mean()
-        print(
-            f"\n[{model_name} | Route: stanford_to_sfo] "
-            f"Travel time RMSE={rmse_tt:.2f} min, MAE={mae_tt:.2f} min (validation)"
-        )
-    except KeyError:
-        print("\nNo route 'stanford_to_sfo' defined in routes.py; skip route metrics.")
 
+        print(
+            f"[{model_name} | Route: {route_name}] "
+            f"Travel Time RMSE = {rmse_tt:.2f} min, "
+            f"MAE = {mae_tt:.2f} min (validation)"
+        )
 
 def main():
     # load raw data
