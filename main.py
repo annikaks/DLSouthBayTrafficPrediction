@@ -333,36 +333,55 @@ def evaluate_route_with_model(ctx, model, model_name="model", route_dict=None):
             f"MAE = {mae_tt:.2f} min (validation)"
         )
 
-# ---------------------------------------------------------------------
-# Train GNN model (on reduced dataset)
-# ---------------------------------------------------------------------
-def run_gnn_lstm(ctx_gnn):
+#run gnn+temporal cnn or gat model 
+def run_gnn_gat(ctx_gnn):
     N, F = ctx_gnn["N"], ctx_gnn["F"]
     edge_index = ctx_gnn["edge_index"]
-
     train_loader = ctx_gnn["train_loader_reg"]
     val_loader = ctx_gnn["val_loader_reg"]
 
-    print("\n=== Training GNN + temporal CNN model ===")
+    use_gat = getattr(config, "RUN_GAT", False)
+    use_gnn = getattr(config, "RUN_GNN", False)
 
-    model = GAT_Temporal_Regressor(
-    num_nodes=N,
-    in_features=F,
-    hidden_dim=32,
-    heads=2,
-    temporal_channels=32,
-    edge_index=edge_index
-    ).to(DEVICE)
+    assert use_gat or use_gnn, "Set RUN_GNN or RUN_GAT = True in config.py"
 
+    # -------------------------------
+    # Select model based on flags
+    # -------------------------------
+    if use_gnn:
+        print("\n=== Training ST-GCN (GCN + Temporal CNN) ===")
+        model = GNN_TemporalCNN_Regressor(
+            num_nodes=N,
+            in_features=F,
+            hidden_dim=getattr(config, "GNN_HIDDEN_DIM", 32),
+            temporal_channels=getattr(config, "GNN_TEMPORAL_CHANNELS", 32),
+            edge_index=edge_index
+        ).to(DEVICE)
+        model_name = "ST-GCN"
+
+    elif use_gat:
+        print("\n=== Training ST-GAT (GAT + Temporal CNN) ===")
+        model = GAT_Temporal_Regressor(
+            num_nodes=N,
+            in_features=F,
+            hidden_dim=getattr(config, "GAT_HIDDEN_DIM", 32),
+            heads=getattr(config, "GAT_HEADS", 2),
+            temporal_channels=getattr(config, "GAT_TEMPORAL_CHANNELS", 32),
+            edge_index=edge_index
+        ).to(DEVICE)
+        model_name = "ST-GAT"
+
+    # -------------------------------
+    # Training loop
+    # -------------------------------
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     criterion = nn.MSELoss()
 
-    for epoch in range(1, 2):
+    for epoch in range(1, 6):
         model.train()
         total_loss = 0.0
 
         for batch_idx, (X, y) in enumerate(train_loader):
-
             X = X.to(DEVICE)
             y = y.to(DEVICE)
 
@@ -379,12 +398,12 @@ def run_gnn_lstm(ctx_gnn):
         )
 
         print(
-            f"[GNN-Temporal][Epoch {epoch}] "
+            f"[{model_name}][Epoch {epoch}] "
             f"train_loss={total_loss / len(train_loader.dataset):.4f} "
             f"val_RMSE={val_rmse:.4f} MAE={val_mae:.4f}"
         )
 
-    evaluate_route_with_model(ctx_gnn, model, model_name="GNN-Temporal", route_dict=ctx_gnn["ROUTES"])
+    evaluate_route_with_model(ctx_gnn, model, model_name=model_name, route_dict=ctx_gnn["ROUTES"])
 
 
 
@@ -464,8 +483,9 @@ def main():
     run_linear_flag = getattr(config, "RUN_LINEAR", True)
     run_logistic_flag = getattr(config, "RUN_LOGISTIC", True)
     run_mlp_flag = getattr(config, "RUN_MLP", True)
-    run_lstm_flag = getattr(config, "RUN_LSTM", False)
-    run_gnn_flag = getattr(config, "RUN_GNN", False)
+    run_lstm_flag = getattr(config, "RUN_LSTM", True)
+    run_gnn_flag = getattr(config, "RUN_GNN", True)
+    run_gat_flag = getattr(config, "RUN_GAT", True)
 
     if run_greedy:  run_naive(ctx)
     if run_linear_flag: run_linear(ctx)
@@ -482,8 +502,8 @@ def main():
         train_regression_model(lstm_model, ctx["train_loader_reg"], ctx["val_loader_reg"])
         evaluate_route_with_model(ctx, lstm_model, model_name="LSTM")
 
-    if run_gnn_flag:
-        run_gnn_lstm(ctx_gnn)
+    if run_gnn_flag or run_gat_flag:
+        run_gnn_gat(ctx_gnn)
 
 
 if __name__ == "__main__":

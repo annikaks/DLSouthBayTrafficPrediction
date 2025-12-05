@@ -21,8 +21,8 @@ RUN_LINEAR = False
 RUN_LOGISTIC = False
 RUN_MLP = False
 RUN_LSTM = False   
-RUN_GNN = True
-
+RUN_GNN = False
+RUN_GAT = True
 
 
 # hyperparameters
@@ -45,6 +45,15 @@ MLP_NUM_TRIALS = 3  # try 3 configurations
 LSTM_HIDDEN_DIM = 128
 LSTM_NUM_LAYERS = 1
 LSTM_DROPOUT = 0.0
+
+#GNN hyperparamters
+GNN_HIDDEN_DIM = 32
+GNN_TEMPORAL_CHANNELS = 32
+
+#GAT hyperparamters
+GAT_HIDDEN_DIM = 32
+GAT_HEADS = 2
+GAT_TEMPORAL_CHANNELS = 32
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
