@@ -359,7 +359,7 @@ def run_gnn_gat(ctx_gnn):
         ).to(DEVICE)
         model_name = "ST-GCN"
 
-    elif use_gat:
+    if use_gat:
         print("\n=== Training ST-GAT (GAT + Temporal CNN) ===")
         model = GAT_Temporal_Regressor(
             num_nodes=N,
