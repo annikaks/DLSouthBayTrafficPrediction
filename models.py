@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+from torch_geometric.nn import GCNConv
+
 
 
 class LinearRegressionModel(nn.Module):
@@ -122,4 +124,81 @@ class LSTMRegressor(nn.Module):
 
         # Predict speed for each sensor
         out = self.fc(h_last)  # (B, N)
+        return out
+
+
+
+#gnn : gcn -> gcn -> lstm -> linear 
+class GNN_LSTM_Regressor(nn.Module):
+    def __init__(
+        self,
+        num_nodes,
+        in_features,
+        hidden_dim=64,
+        temporal_channels=32,
+        edge_index=None,
+    ):
+        super().__init__()
+
+        # Save edge_index for use in forward()
+        self.edge_index = edge_index
+
+        # GNN layers
+        self.gcn1 = GCNConv(in_features, hidden_dim)
+        self.gcn2 = GCNConv(hidden_dim, hidden_dim)
+
+        # Temporal CNN (fast, instead of LSTM)
+        self.temporal_cnn = nn.Sequential(
+            nn.Conv1d(hidden_dim, temporal_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(temporal_channels, temporal_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+        )
+
+        # Final readout per node
+        self.fc = nn.Linear(temporal_channels, 1)
+
+        self.num_nodes = num_nodes
+        self.hidden_dim = hidden_dim
+
+    def forward(self, x, edge_index=None):
+        # Use stored edge_index if user didn't pass one
+        if edge_index is None:
+            edge_index = self.edge_index
+
+        # x shape: (B, W, N, F)
+        B, W, N, F = x.shape
+
+        outputs = []
+
+        for t in range(W):
+            # (B, N, F) → (B*N, F)
+            xt = x[:, t].reshape(B * N, F)
+
+            # GNN
+            h = self.gcn1(xt, edge_index)
+            h = torch.relu(h)
+            h = self.gcn2(h, edge_index)
+            h = torch.relu(h)
+
+            # Back to (B, N, H)
+            h = h.reshape(B, N, self.hidden_dim)
+            outputs.append(h)
+
+        # Stack temporal dimension
+        H = torch.stack(outputs, dim=1)    # (B, W, N, H)
+
+        # Temporal CNN wants channel-first:
+        # (B, W, N, H) → (B*N, H, W)
+        H = H.permute(0, 2, 3, 1).reshape(B * N, self.hidden_dim, W)
+
+        # Apply temporal CNN
+        H = self.temporal_cnn(H)  # (B*N, C, W)
+
+        # Take last timestep
+        H_last = H[:, :, -1]  # (B*N, C)
+
+        # Final prediction
+        out = self.fc(H_last).reshape(B, N)
+
         return out

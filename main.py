@@ -2,6 +2,9 @@ import numpy as np
 import random
 import torch
 from torch.utils.data import DataLoader
+import torch.nn as nn
+
+
 
 import config  # to read ranges / switches
 
@@ -25,6 +28,7 @@ from models import (
     LogisticRegressionModel,
     MLPRegressor,
     LSTMRegressor,
+    GNN_LSTM_Regressor,
 )
 from train_utils import (
     train_regression_model,
@@ -32,8 +36,9 @@ from train_utils import (
     evaluate,  # to get val RMSE for MLP trials
 )
 from baselines import evaluate_naive_last_value
-from routes import ROUTES, compute_route_travel_time_minutes
-from config import DEVICE
+from routes import ROUTES, compute_route_travel_time_minutes, load_sensor_data
+from graph import build_knn_graph
+from config import DEVICE, LR
 
 
 def data_setup(data, scaler):
@@ -284,18 +289,29 @@ def evaluate_route_with_model(ctx, model, model_name="model"):
 
     for route_name in ROUTES:
 
+        # ---- TRUE ETA (ground truth) ----
         true_tt = compute_route_travel_time_minutes(
             y_val_true,
             scaler,
             route_name=route_name,
         )
 
+        # ✅ NEW SANITY DIAGNOSTIC
+        print(
+            f"[{route_name}] TRUE ETA stats → "
+            f"mean = {true_tt.mean():.2f} min | "
+            f"min = {true_tt.min():.2f} | "
+            f"max = {true_tt.max():.2f}"
+        )
+
+        # ---- PREDICTED ETA ----
         pred_tt = compute_route_travel_time_minutes(
             y_val_pred,
             scaler,
             route_name=route_name,
         )
 
+        # ---- ERROR METRICS ----
         rmse_tt = np.sqrt(((true_tt - pred_tt) ** 2).mean())
         mae_tt = np.abs(true_tt - pred_tt).mean()
 
@@ -305,15 +321,74 @@ def evaluate_route_with_model(ctx, model, model_name="model"):
             f"MAE = {mae_tt:.2f} min (validation)"
         )
 
+# ---------------------------------------------------------------------
+# Train GNN model (on reduced dataset)
+# ---------------------------------------------------------------------
+def run_gnn_lstm(ctx):
+    N, F = ctx["N"], ctx["F"]
+    edge_index = ctx["edge_index"]
+
+    train_loader = ctx["train_loader_reg"]
+    val_loader = ctx["val_loader_reg"]
+
+    print("\n=== Training GNN + temporal CNN model ===")
+
+    model = GNN_LSTM_Regressor(
+        num_nodes=N,
+        in_features=F,
+        hidden_dim=32,
+        temporal_channels=32,
+        edge_index=edge_index
+    ).to(DEVICE)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    criterion = nn.MSELoss()
+
+    for epoch in range(1, 6):
+        model.train()
+        total_loss = 0.0
+
+        for batch_idx, (X, y) in enumerate(train_loader):
+            if batch_idx % 30 == 0:
+                print(f"[Epoch {epoch}] Batch {batch_idx}")
+
+            X = X.to(DEVICE)
+            y = y.to(DEVICE)
+
+            optimizer.zero_grad()
+            y_hat = model(X, edge_index)
+            loss = criterion(y_hat, y)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item() * X.size(0)
+
+        val_loss, val_rmse, val_mae = evaluate(
+            model, val_loader, criterion, task="regression"
+        )
+
+        print(
+            f"[GNN-Temporal][Epoch {epoch}] "
+            f"train_loss={total_loss / len(train_loader.dataset):.4f} "
+            f"val_RMSE={val_rmse:.4f} MAE={val_mae:.4f}"
+        )
+
+    evaluate_route_with_model(ctx, model, model_name="GNN-Temporal")
+
+
+
+# =====================================================================
+#                              MAIN()
+# =====================================================================
 def main():
-    # load raw data
+    # Load raw data
     raw_data = load_raw_data(DATA_PATH)
     print("Raw data shape:", raw_data.shape)
 
-    # Always add time-based features
+    # Always add time features
     data = add_context_features(raw_data)
 
-    # ✅ Conditionally add spatial features
+    # Optional spatial features
     use_spatial = getattr(config, "USE_SPATIAL_FEATURES", False)
     if use_spatial:
         k = getattr(config, "SPATIAL_K", 5)
@@ -324,34 +399,80 @@ def main():
 
     print("Final feature data shape:", data.shape)
 
+    # ------------------------------------------------------------------
+    # 1) Build full ctx (all sensors) for baselines + LSTM
+    # ------------------------------------------------------------------
     scaler = Normalizer()
     ctx = data_setup(data, scaler)
 
-    # models to run (booleans in config.py)
+    # ------------------------------------------------------------------
+    # 2) Build reduced GNN dataset containing only route sensors
+    # ------------------------------------------------------------------
+    all_route_sensors = sorted({
+        idx for route in ROUTES.values()
+        for idx in route["sensor_indices"]
+    })
+    print("Total route sensors for GNN:", len(all_route_sensors))
+
+    data_gnn = data[:, all_route_sensors, :]
+    print("GNN data shape:", data_gnn.shape)
+
+    scaler_gnn = Normalizer()
+    ctx_gnn = data_setup(data_gnn, scaler_gnn)
+
+    # ------------------------------------------------------------------
+    # 3) Build KNN graph for GNN (only on route sensors)
+    # ------------------------------------------------------------------
+    ids, lats, lons, _ = load_sensor_data()
+    route_lats = lats[all_route_sensors]
+    route_lons = lons[all_route_sensors]
+
+    edge_index_np = build_knn_graph(route_lats, route_lons, k=5)
+    edge_index = torch.tensor(edge_index_np, dtype=torch.long).to(DEVICE)
+
+    ctx_gnn["edge_index"] = edge_index
+
+    # ------------------------------------------------------------------
+    # 4) Remap route indices for GNN context
+    # ------------------------------------------------------------------
+    global_to_local = {g: i for i, g in enumerate(all_route_sensors)}
+
+    ROUTES_GNN = {}
+    for name, route in ROUTES.items():
+        ROUTES_GNN[name] = {
+            "sensor_indices": [global_to_local[i] for i in route["sensor_indices"]],
+            "segment_lengths_mi": route["segment_lengths_mi"],
+        }
+
+    ctx_gnn["ROUTES"] = ROUTES_GNN
+
+    # ------------------------------------------------------------------
+    # Model selections
+    # ------------------------------------------------------------------
     run_greedy = getattr(config, "RUN_GREEDY", True)
     run_linear_flag = getattr(config, "RUN_LINEAR", True)
     run_logistic_flag = getattr(config, "RUN_LOGISTIC", True)
     run_mlp_flag = getattr(config, "RUN_MLP", True)
     run_lstm_flag = getattr(config, "RUN_LSTM", False)
+    run_gnn_flag = getattr(config, "RUN_GNN", False)
 
-    if run_greedy:
-        run_naive(ctx)
+    if run_greedy:  run_naive(ctx)
+    if run_linear_flag: run_linear(ctx)
+    if run_logistic_flag: run_logistic(ctx)
 
-    if run_linear_flag:
-        run_linear(ctx)
-
-    if run_logistic_flag:
-        run_logistic(ctx)
-
-    best_mlp = None
     if run_mlp_flag:
         best_mlp = run_mlp_random_search(ctx)
-        evaluate_route_with_model(ctx, best_mlp)
+        evaluate_route_with_model(ctx, best_mlp, model_name="MLP")
 
-    lstm_model = None
     if run_lstm_flag:
-        lstm_model = run_lstm(ctx)
+        lstm_model = LSTMRegressor(
+            WINDOW_SIZE, ctx["N"], ctx["F"]
+        )
+        train_regression_model(lstm_model, ctx["train_loader_reg"], ctx["val_loader_reg"])
         evaluate_route_with_model(ctx, lstm_model, model_name="LSTM")
+
+    if run_gnn_flag:
+        run_gnn_lstm(ctx_gnn)
 
 
 if __name__ == "__main__":
