@@ -5,7 +5,7 @@ DATA_PATH = "../CS230DeepLearningProject/data/PEMSBAY_2022.npy"  # TODO: make su
 
 # window + horizon
 WINDOW_SIZE = 12  # past 12, 5 min windows = each window is one hour
-HORIZON = 6       # predict 6 step (30 mins) ahead
+HORIZON = 12       # predict 12 step (60 mins) ahead
 
 # splits (time-based)   
 TRAIN_RATIO = 0.7
@@ -20,7 +20,9 @@ RUN_GREEDY = False
 RUN_LINEAR = False
 RUN_LOGISTIC = False
 RUN_MLP = False
-RUN_LSTM = True   
+RUN_LSTM = False   
+RUN_GNN = True
+
 
 
 # hyperparameters

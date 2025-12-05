@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GCNConv, GATConv
 
 
 
@@ -128,13 +128,13 @@ class LSTMRegressor(nn.Module):
 
 
 
-#gnn : gcn -> gcn -> lstm -> linear 
-class GNN_LSTM_Regressor(nn.Module):
+#gnn : gcn -> gcn -> temporal CNN -> linear FC 
+class GNN_TemporalCNN_Regressor(nn.Module):
     def __init__(
         self,
         num_nodes,
         in_features,
-        hidden_dim=64,
+        hidden_dim=32,
         temporal_channels=32,
         edge_index=None,
     ):
@@ -202,3 +202,71 @@ class GNN_LSTM_Regressor(nn.Module):
         out = self.fc(H_last).reshape(B, N)
 
         return out
+    
+class GAT_Temporal_Regressor(nn.Module):
+    def __init__(self, num_nodes, in_features, hidden_dim=32, heads=2, temporal_channels=32, edge_index=None):
+        super().__init__()
+
+        self.edge_index = edge_index
+
+        # ----------- GAT Layers -----------
+        self.gat1 = GATConv(in_features, hidden_dim, heads=heads, concat=True)
+        gat_out_dim = hidden_dim * heads
+
+        self.gat2 = GATConv(gat_out_dim, hidden_dim, heads=heads, concat=False)
+
+        # ----------- Temporal CNN -----------
+        self.temporal_conv = nn.Conv1d(
+            in_channels=hidden_dim,
+            out_channels=temporal_channels,
+            kernel_size=3,
+            padding=1,
+        )
+
+        self.relu = nn.ReLU()
+
+        # Final projection back to per-node speeds
+        self.fc = nn.Linear(temporal_channels, 1)
+
+    def forward(self, x, edge_index=None):
+        # Use passed edge_index or stored one
+        if edge_index is None:
+            edge_index = self.edge_index
+
+        B, W, N, F = x.shape
+        outputs = []
+
+        for t in range(W):
+            x_t = x[:, t]              # (B, N, F)
+            x_t = x_t.reshape(B * N, F)
+
+            # ---- GAT 1 ----
+            h = self.gat1(x_t, edge_index)
+            h = torch.relu(h)
+
+            # ---- GAT 2 ----
+            h = self.gat2(h, edge_index)
+            h = torch.relu(h)
+
+            h = h.reshape(B, N, -1)    # (B, N, H)
+            outputs.append(h)
+
+        # Stack over time → (B, W, N, H)
+        h_seq = torch.stack(outputs, dim=1)
+
+        # ---- TEMPORAL CNN ----
+        # reshape to (B*N, H, W)
+        h_seq = h_seq.permute(0, 2, 3, 1)    # (B, N, H, W)
+        h_seq = h_seq.reshape(B * N, h_seq.size(2), W)
+
+        h_time = self.temporal_conv(h_seq)  # (B*N, C, W)
+        h_time = torch.relu(h_time)
+
+        # Take last time step
+        h_final = h_time[:, :, -1]          # (B*N, C)
+
+        # Predict speed
+        out = self.fc(h_final).reshape(B, N)
+
+        return out
+

@@ -197,6 +197,7 @@ def compute_route_travel_time_minutes(
     y_speed_norm: np.ndarray,
     scaler,
     route_name: str,
+    route_dict = None
 ) -> np.ndarray:
     """
     Convert sensor-level normalized speed predictions into route travel time.
@@ -208,7 +209,10 @@ def compute_route_travel_time_minutes(
     Returns:
         travel_time: (S,) array in minutes
     """
-    route = ROUTES[route_name]
+    if route_dict is None:
+        route_dict = ROUTES
+
+    route = route_dict[route_name]
     idx = route["sensor_indices"]
     lengths = np.array(route["segment_lengths_mi"], dtype=np.float32)  # (K,)
 

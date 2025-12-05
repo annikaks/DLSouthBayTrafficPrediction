@@ -28,7 +28,8 @@ from models import (
     LogisticRegressionModel,
     MLPRegressor,
     LSTMRegressor,
-    GNN_LSTM_Regressor,
+    GNN_TemporalCNN_Regressor,
+    GAT_Temporal_Regressor,
 )
 from train_utils import (
     train_regression_model,
@@ -264,9 +265,15 @@ def run_mlp_random_search(ctx):
         return mlp_model
 
 
-def evaluate_route_with_model(ctx, model, model_name="model"):
+def evaluate_route_with_model(ctx, model, model_name="model", route_dict=None):
+    
     scaler = ctx["scaler"]
     val_loader_reg = ctx["val_loader_reg"]
+
+    #set to routes for all but gnn regressor
+    if route_dict is None:
+        route_dict = ROUTES
+
 
     model.to(DEVICE)
     model.eval()
@@ -287,13 +294,17 @@ def evaluate_route_with_model(ctx, model, model_name="model"):
 
     print(f"\n[{model_name}] Route-level ETA evaluation:")
 
-    for route_name in ROUTES:
+    for route_name in route_dict:
+
+        route = route_dict[route_name]             
+        idx = route["sensor_indices"] 
 
         # ---- TRUE ETA (ground truth) ----
         true_tt = compute_route_travel_time_minutes(
             y_val_true,
             scaler,
             route_name=route_name,
+            route_dict=route_dict,
         )
 
         # ✅ NEW SANITY DIAGNOSTIC
@@ -309,6 +320,7 @@ def evaluate_route_with_model(ctx, model, model_name="model"):
             y_val_pred,
             scaler,
             route_name=route_name,
+            route_dict=route_dict,
         )
 
         # ---- ERROR METRICS ----
@@ -324,33 +336,32 @@ def evaluate_route_with_model(ctx, model, model_name="model"):
 # ---------------------------------------------------------------------
 # Train GNN model (on reduced dataset)
 # ---------------------------------------------------------------------
-def run_gnn_lstm(ctx):
-    N, F = ctx["N"], ctx["F"]
-    edge_index = ctx["edge_index"]
+def run_gnn_lstm(ctx_gnn):
+    N, F = ctx_gnn["N"], ctx_gnn["F"]
+    edge_index = ctx_gnn["edge_index"]
 
-    train_loader = ctx["train_loader_reg"]
-    val_loader = ctx["val_loader_reg"]
+    train_loader = ctx_gnn["train_loader_reg"]
+    val_loader = ctx_gnn["val_loader_reg"]
 
     print("\n=== Training GNN + temporal CNN model ===")
 
-    model = GNN_LSTM_Regressor(
-        num_nodes=N,
-        in_features=F,
-        hidden_dim=32,
-        temporal_channels=32,
-        edge_index=edge_index
+    model = GAT_Temporal_Regressor(
+    num_nodes=N,
+    in_features=F,
+    hidden_dim=32,
+    heads=2,
+    temporal_channels=32,
+    edge_index=edge_index
     ).to(DEVICE)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     criterion = nn.MSELoss()
 
-    for epoch in range(1, 6):
+    for epoch in range(1, 2):
         model.train()
         total_loss = 0.0
 
         for batch_idx, (X, y) in enumerate(train_loader):
-            if batch_idx % 30 == 0:
-                print(f"[Epoch {epoch}] Batch {batch_idx}")
 
             X = X.to(DEVICE)
             y = y.to(DEVICE)
@@ -373,7 +384,7 @@ def run_gnn_lstm(ctx):
             f"val_RMSE={val_rmse:.4f} MAE={val_mae:.4f}"
         )
 
-    evaluate_route_with_model(ctx, model, model_name="GNN-Temporal")
+    evaluate_route_with_model(ctx_gnn, model, model_name="GNN-Temporal", route_dict=ctx_gnn["ROUTES"])
 
 
 
